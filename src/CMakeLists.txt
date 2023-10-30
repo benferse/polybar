@@ -120,6 +120,7 @@ set(POLY_SOURCES
   ${src_dir}/utils/inotify.cpp
   ${src_dir}/utils/io.cpp
   ${src_dir}/utils/process.cpp
+  ${src_dir}/utils/restack.cpp
   ${src_dir}/utils/socket.cpp
   ${src_dir}/utils/string.cpp
   ${src_dir}/utils/units.cpp
@@ -132,6 +133,7 @@ set(POLY_SOURCES
   ${src_dir}/x11/extensions/randr.cpp
   ${src_dir}/x11/icccm.cpp
   ${src_dir}/x11/registry.cpp
+  ${src_dir}/x11/legacy_tray_manager.cpp
   ${src_dir}/x11/tray_client.cpp
   ${src_dir}/x11/tray_manager.cpp
   ${src_dir}/x11/window.cpp

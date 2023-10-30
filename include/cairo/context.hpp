@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <iomanip>
 #include <iterator>
 
 #include "cairo/font.hpp"
@@ -163,9 +164,21 @@ namespace cairo {
         std::iter_swap(fns.begin(), fns.begin() + t.font - 1);
       }
 
-      string utf8 = string(t.contents);
-      utils::unicode_charlist chars;
-      utils::utf8_to_ucs4((const unsigned char*)utf8.c_str(), chars);
+      string utf8 = t.contents;
+      string_util::unicode_charlist chars;
+      bool valid = string_util::utf8_to_ucs4(utf8, chars);
+
+      // The conversion already removed any invalid chunks. We should probably log a warning though.
+      if (!valid) {
+        sstream hex;
+        hex << std::hex << std::setw(2) << std::setfill('0');
+
+        for(const char& c: utf8) {
+          hex << (static_cast<int>(c) & 0xff) << " ";
+        }
+
+        m_log.warn("Dropping invalid parts of UTF8 text '%s' %s", utf8, hex.to_string());
+      }
 
       while (!chars.empty()) {
         auto remaining = chars.size();
@@ -234,9 +247,9 @@ namespace cairo {
           continue;
         }
 
-        char unicode[6]{'\0'};
-        utils::ucs4_to_utf8(unicode, chars.begin()->codepoint);
-        m_log.warn("Dropping unmatched character %s (U+%04x) in '%s'", unicode, chars.begin()->codepoint, t.contents);
+        std::array<char, 5> unicode{};
+        string_util::ucs4_to_utf8(unicode, chars.begin()->codepoint);
+        m_log.warn("Dropping unmatched character '%s' (U+%04x) in '%s'", unicode.data(), chars.begin()->codepoint, t.contents);
         utf8.erase(chars.begin()->offset, chars.begin()->length);
         for (auto&& c : chars) {
           c.offset -= chars.begin()->length;

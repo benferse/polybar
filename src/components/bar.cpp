@@ -13,6 +13,7 @@
 #include "utils/bspwm.hpp"
 #include "utils/color.hpp"
 #include "utils/math.hpp"
+#include "utils/restack.hpp"
 #include "utils/string.hpp"
 #include "utils/units.hpp"
 #include "x11/atoms.hpp"
@@ -20,7 +21,7 @@
 #include "x11/ewmh.hpp"
 #include "x11/extensions/all.hpp"
 #include "x11/icccm.hpp"
-#include "x11/tray_manager.hpp"
+#include "x11/legacy_tray_manager.hpp"
 
 #if WITH_XCURSOR
 #include "x11/cursor.hpp"
@@ -38,17 +39,17 @@ using namespace eventloop;
 /**
  * Create instance
  */
-bar::make_type bar::make(loop& loop, bool only_initialize_values) {
+bar::make_type bar::make(loop& loop, const config& config, bool only_initialize_values) {
   auto action_ctxt = make_unique<tags::action_context>();
 
   // clang-format off
   return std::make_unique<bar>(
       connection::make(),
       signal_emitter::make(),
-      config::make(),
+      config,
       logger::make(),
       loop,
-      screen::make(),
+      screen::make(config),
       tags::dispatch::make(*action_ctxt),
       std::move(action_ctxt),
       only_initialize_values);
@@ -57,8 +58,6 @@ bar::make_type bar::make(loop& loop, bool only_initialize_values) {
 
 /**
  * Construct bar instance
- *
- * TODO: Break out all tray handling
  */
 bar::bar(connection& conn, signal_emitter& emitter, const config& config, const logger& logger, loop& loop,
     unique_ptr<screen>&& screen, unique_ptr<tags::dispatch>&& dispatch, unique_ptr<tags::action_context>&& action_ctxt,
@@ -73,14 +72,14 @@ bar::bar(connection& conn, signal_emitter& emitter, const config& config, const 
     , m_action_ctxt(forward<decltype(action_ctxt)>(action_ctxt)) {
   string bs{m_conf.section()};
 
-  m_tray = tray_manager::make(m_opts);
+  m_tray = legacy_tray::tray_manager::make(m_opts);
 
   // Get available RandR outputs
   auto monitor_name = m_conf.get(bs, "monitor", ""s);
   auto monitor_name_fallback = m_conf.get(bs, "monitor-fallback", ""s);
   m_opts.monitor_strict = m_conf.get(bs, "monitor-strict", m_opts.monitor_strict);
   m_opts.monitor_exact = m_conf.get(bs, "monitor-exact", m_opts.monitor_exact);
-  auto monitors = randr_util::get_monitors(m_connection, m_connection.screen()->root, m_opts.monitor_strict, false);
+  auto monitors = randr_util::get_monitors(m_connection, m_opts.monitor_strict, false);
 
   if (monitors.empty()) {
     throw application_error("No monitors found");
@@ -98,7 +97,7 @@ bar::bar(connection& conn, signal_emitter& emitter, const config& config, const 
 
   // if still not found (and not strict matching), get first connected monitor
   if (monitor_name.empty() && !m_opts.monitor_strict) {
-    auto connected_monitors = randr_util::get_monitors(m_connection, m_connection.screen()->root, true, false);
+    auto connected_monitors = randr_util::get_monitors(m_connection, true, false);
     if (!connected_monitors.empty()) {
       monitor_name = connected_monitors[0]->name;
       m_log.warn("No monitor specified, using \"%s\"", monitor_name);
@@ -399,14 +398,13 @@ void bar::parse(string&& data, bool force) {
 
   auto rect = m_opts.inner_area();
 
-  if (m_tray && !m_tray->settings().detached && m_tray->settings().configured_slots &&
-      m_tray->settings().tray_position != tray_postition::MODULE) {
+  if (m_tray && !m_tray->settings().detached && m_tray->settings().configured_slots) {
     auto tray_pos = m_tray->settings().tray_position;
     auto traywidth = m_tray->settings().configured_w;
-    if (tray_pos == tray_postition::LEFT) {
+    if (tray_pos == legacy_tray::tray_postition::LEFT) {
       rect.x += traywidth;
       rect.width -= traywidth;
-    } else if (tray_pos == tray_postition::RIGHT) {
+    } else if (tray_pos == legacy_tray::tray_postition::RIGHT) {
       rect.width -= traywidth;
     }
   }
@@ -443,7 +441,7 @@ void bar::hide() {
     m_visible = false;
     reconfigure_struts();
     m_sig.emit(visibility_change{false});
-    m_connection.unmap_window_checked(m_opts.window);
+    m_connection.unmap_window_checked(m_opts.x_data.window);
     m_connection.flush();
   } catch (const exception& err) {
     m_log.err("Failed to unmap bar window (err=%s", err.what());
@@ -482,8 +480,11 @@ void bar::toggle() {
 }
 
 /**
- * Move the bar window above defined sibling
- * in the X window stack
+ * Move the bar window above/below defined sibling in the X window stack.
+ *
+ * How the sibling is determined depends on the wm-restack setting.
+ *
+ * This is meant to resolve polybar appearing above other windows (especially in fullscreen).
  */
 void bar::restack_window() {
   string wm_restack;
@@ -494,25 +495,21 @@ void bar::restack_window() {
     return;
   }
 
-  auto restacked = false;
+  xcb_window_t bar_window = m_opts.x_data.window;
+
+  restack_util::params restack_params;
 
   if (wm_restack == "generic") {
-    try {
-      auto children = m_connection.query_tree(m_connection.screen()->root).children();
-      if (children.begin() != children.end() && *children.begin() != m_opts.window) {
-        const unsigned int value_mask = XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE;
-        const unsigned int value_list[2]{*children.begin(), XCB_STACK_MODE_BELOW};
-        m_connection.configure_window_checked(m_opts.window, value_mask, value_list);
-      }
-      restacked = true;
-    } catch (const exception& err) {
-      m_log.err("Failed to restack bar window (err=%s)", err.what());
-    }
+    restack_params = restack_util::get_generic_params(m_connection, bar_window);
+  } else if (wm_restack == "ewmh") {
+    restack_params = restack_util::get_ewmh_params(m_connection);
+  } else if (wm_restack == "bottom") {
+    restack_params = restack_util::get_bottom_params(m_connection, bar_window);
   } else if (wm_restack == "bspwm") {
-    restacked = bspwm_util::restack_to_root(m_connection, m_opts.monitor, m_opts.window);
+    restack_params = bspwm_util::get_restack_params(m_connection);
 #if ENABLE_I3
   } else if (wm_restack == "i3" && m_opts.override_redirect) {
-    restacked = i3_util::restack_to_root(m_connection, m_opts.window);
+    restack_params = i3_util::get_restack_params(m_connection);
   } else if (wm_restack == "i3" && !m_opts.override_redirect) {
     m_log.warn("Ignoring restack of i3 window (not needed when `override-redirect = false`)");
     wm_restack.clear();
@@ -522,10 +519,19 @@ void bar::restack_window() {
     wm_restack.clear();
   }
 
-  if (restacked) {
-    m_log.info("Successfully restacked bar window");
+  auto [restack_sibling, stack_mode] = restack_params;
+
+  if (restack_sibling != XCB_NONE) {
+    try {
+      m_log.info("bar: Restacking bar window relative to %s with stacking mode %s", m_connection.id(restack_sibling),
+          restack_util::stack_mode_to_string(stack_mode));
+      restack_util::restack_relative(m_connection, bar_window, restack_sibling, stack_mode);
+      m_log.info("Successfully restacked bar window");
+    } catch (const exception& err) {
+      m_log.err("Failed to restack bar window (err=%s)", err.what());
+    }
   } else if (!wm_restack.empty()) {
-    m_log.err("Failed to restack bar window");
+    m_log.err("Failed to restack bar window: No suitable sibling window for restacking was found");
   }
 }
 
@@ -541,7 +547,7 @@ void bar::reconfigure_window() {
  * Reconfigure window geometry
  */
 void bar::reconfigure_geom() {
-  window win{m_connection, m_opts.window};
+  window win{m_connection, m_opts.x_data.window};
   win.reconfigure_geom(m_opts.size.w, m_opts.size.h, m_opts.pos.x, m_opts.pos.y);
 }
 
@@ -549,7 +555,7 @@ void bar::reconfigure_geom() {
  * Reconfigure window position
  */
 void bar::reconfigure_pos() {
-  window win{m_connection, m_opts.window};
+  window win{m_connection, m_opts.x_data.window};
   win.reconfigure_pos(m_opts.pos.x, m_opts.pos.y);
 }
 
@@ -560,10 +566,9 @@ void bar::reconfigure_struts() {
   if (!m_opts.struts) {
     return;
   }
-
-  window win{m_connection, m_opts.window};
+  window win{m_connection, m_opts.x_data.window};
   if (m_visible) {
-    auto geom = m_connection.get_geometry(m_screen->root());
+    auto geom = m_connection.get_geometry(m_connection.root());
     int h = m_opts.size.h + m_opts.offset.y;
 
     // Apply user-defined margins
@@ -607,7 +612,7 @@ void bar::reconfigure_struts() {
  * Reconfigure window wm hint values
  */
 void bar::reconfigure_wm_hints() {
-  const auto& win = m_opts.window;
+  const auto& win = m_opts.x_data.window;
 
   m_log.trace("bar: Set window WM_NAME");
   icccm_util::set_wm_name(m_connection, win, m_opts.wmname.c_str(), m_opts.wmname.size(), "polybar\0Polybar", 15_z);
@@ -631,7 +636,7 @@ void bar::reconfigure_wm_hints() {
  * Broadcast current map state
  */
 void bar::broadcast_visibility() {
-  auto attr = m_connection.get_window_attributes(m_opts.window);
+  auto attr = m_connection.get_window_attributes(m_opts.x_data.window);
 
   if (attr->map_state == XCB_MAP_STATE_UNVIEWABLE) {
     m_sig.emit(visibility_change{false});
@@ -652,7 +657,7 @@ void bar::map_window() {
   reconfigure_window();
 
   m_log.trace("bar: Map window");
-  m_connection.map_window_checked(m_opts.window);
+  m_connection.map_window_checked(m_opts.x_data.window);
 
   /*
    * Required by AwesomeWM. AwesomeWM does not seem to respect polybar's position if WM_NORMAL_HINTS are set before
@@ -684,7 +689,7 @@ void bar::trigger_click(mousebtn btn, int pos) {
  * Event handler for XCB_DESTROY_NOTIFY events
  */
 void bar::handle(const evt::client_message& evt) {
-  if (evt->type == WM_PROTOCOLS && evt->data.data32[0] == WM_DELETE_WINDOW && evt->window == m_opts.window) {
+  if (evt->type == WM_PROTOCOLS && evt->data.data32[0] == WM_DELETE_WINDOW && evt->window == m_opts.x_data.window) {
     m_log.err("Bar window has been destroyed, shutting down...");
     m_connection.disconnect();
   }
@@ -694,7 +699,7 @@ void bar::handle(const evt::client_message& evt) {
  * Event handler for XCB_DESTROY_NOTIFY events
  */
 void bar::handle(const evt::destroy_notify& evt) {
-  if (evt->window == m_opts.window) {
+  if (evt->window == m_opts.x_data.window) {
     m_connection.disconnect();
   }
 }
@@ -851,8 +856,8 @@ void bar::handle(const evt::button_press& evt) {
  * Used to redraw the bar
  */
 void bar::handle(const evt::expose& evt) {
-  if (evt->window == m_opts.window && evt->count == 0) {
-    if (m_tray->settings().running) {
+  if (evt->window == m_opts.x_data.window && evt->count == 0) {
+    if (m_tray && m_tray->settings().running) {
       broadcast_visibility();
     }
 
@@ -876,13 +881,13 @@ void bar::handle(const evt::property_notify& evt) {
   m_log.trace_x("bar: property_notify(%s)", atom_name);
 #endif
 
-  if (evt->window == m_opts.window && evt->atom == WM_STATE) {
+  if (evt->window == m_opts.x_data.window && evt->atom == WM_STATE) {
     broadcast_visibility();
   }
 }
 
 void bar::handle(const evt::configure_notify& evt) {
-  if (evt->window != m_opts.window) {
+  if (evt->window != m_opts.x_data.window) {
     return;
   }
   // The absolute position of the window in the root may be different after configuration is done
@@ -893,20 +898,23 @@ void bar::handle(const evt::configure_notify& evt) {
 
 void bar::start(const string& tray_module_name) {
   m_log.trace("bar: Create renderer");
-  m_renderer = renderer::make(m_opts, *m_action_ctxt);
-  m_opts.window = m_renderer->window();
+  m_renderer = renderer::make(m_opts, *m_action_ctxt, m_conf);
+
+  m_opts.x_data.window = m_renderer->window();
+  m_opts.x_data.visual = m_renderer->visual();
+  m_opts.x_data.depth = m_renderer->depth();
 
   // Subscribe to window enter and leave events
   // if we should dim the window
   if (m_opts.dimvalue != 1.0) {
-    m_connection.ensure_event_mask(m_opts.window, XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_LEAVE_WINDOW);
+    m_connection.ensure_event_mask(m_opts.x_data.window, XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_LEAVE_WINDOW);
   }
   if (!m_opts.cursor_click.empty() || !m_opts.cursor_scroll.empty()) {
-    m_connection.ensure_event_mask(m_opts.window, XCB_EVENT_MASK_POINTER_MOTION);
+    m_connection.ensure_event_mask(m_opts.x_data.window, XCB_EVENT_MASK_POINTER_MOTION);
   }
-  m_connection.ensure_event_mask(m_opts.window, XCB_EVENT_MASK_STRUCTURE_NOTIFY);
+  m_connection.ensure_event_mask(m_opts.x_data.window, XCB_EVENT_MASK_STRUCTURE_NOTIFY);
 
-  m_log.info("Bar window: %s", m_connection.id(m_opts.window));
+  m_log.info("Bar window: %s", m_connection.id(m_opts.x_data.window));
 
   map_window();
 
@@ -919,14 +927,19 @@ void bar::start(const string& tray_module_name) {
   m_renderer->end();
 
   m_log.trace("bar: Setup tray manager");
-  m_tray->setup(tray_module_name);
+  m_tray->setup(m_conf, tray_module_name);
+
+  if (m_tray->settings().tray_position == legacy_tray::tray_postition::MODULE ||
+      m_tray->settings().tray_position == legacy_tray::tray_postition::NONE) {
+    m_tray.reset();
+  }
 
   broadcast_visibility();
 }
 
 bool bar::on(const signals::ui::dim_window& sig) {
   m_opts.dimmed = sig.cast() != 1.0;
-  ewmh_util::set_wm_window_opacity(m_opts.window, sig.cast() * 0xFFFFFFFF);
+  ewmh_util::set_wm_window_opacity(m_opts.x_data.window, sig.cast() * 0xFFFFFFFF);
   return false;
 }
 
@@ -938,7 +951,7 @@ void bar::change_cursor(const string& name) {
   }
   m_cursor = name;
 
-  if (!cursor_util::set_cursor(m_connection, m_connection.screen(), m_opts.window, name)) {
+  if (!cursor_util::set_cursor(m_connection, m_connection.screen(), m_opts.x_data.window, name)) {
     m_log.warn("Failed to create cursor context for cursor name '%s'", name);
   }
   m_connection.flush();

@@ -2,6 +2,7 @@
 
 #include "adapters/script_runner.hpp"
 #include "modules/meta/base.hpp"
+#include "modules/meta/types.hpp"
 #include "utils/command.hpp"
 #include "utils/io.hpp"
 
@@ -10,7 +11,7 @@ POLYBAR_NS
 namespace modules {
   class script_module : public module<script_module> {
    public:
-    explicit script_module(const bar_settings&, string);
+    explicit script_module(const bar_settings&, string, const config&);
 
     void start() override;
     void stop() override;
@@ -20,7 +21,7 @@ namespace modules {
 
     bool build(builder* builder, const string& tag) const;
 
-    static constexpr auto TYPE = "custom/script";
+    static constexpr auto TYPE = SCRIPT_TYPE;
 
    protected:
     bool check_condition();

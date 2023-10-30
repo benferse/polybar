@@ -82,11 +82,15 @@ enum class strut {
 struct position {
   int x{0};
   int y{0};
+
+  bool operator==(const position& other) {
+    return this->x == other.x && this->y == other.y;
+  }
 };
 
 struct size {
-  unsigned int w{1U};
-  unsigned int h{1U};
+  unsigned w{1U};
+  unsigned h{1U};
 };
 
 enum class spacing_type { SPACE, POINT, PIXEL };
@@ -163,11 +167,21 @@ struct action {
   string command{};
 };
 
+/**
+ * Settings specific to the X window system.
+ */
+struct x_settings {
+  xcb_window_t window{XCB_NONE};
+  xcb_visualtype_t* visual{nullptr};
+  int depth{-1};
+};
+
 struct bar_settings {
   explicit bar_settings() = default;
   bar_settings(const bar_settings& other) = default;
 
-  xcb_window_t window{XCB_NONE};
+  x_settings x_data;
+
   monitor_t monitor{};
   bool monitor_strict{false};
   bool monitor_exact{true};

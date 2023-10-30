@@ -23,10 +23,12 @@ class connection;
 class logger;
 class renderer;
 class screen;
+namespace legacy_tray {
 class tray_manager;
+}
 
 namespace tags {
-  class dispatch;
+class dispatch;
 }
 // }}}
 
@@ -35,7 +37,7 @@ class bar : public xpp::event::sink<evt::button_press, evt::expose, evt::propert
             public signal_receiver<SIGN_PRIORITY_BAR, signals::ui::dim_window> {
  public:
   using make_type = unique_ptr<bar>;
-  static make_type make(eventloop::loop&, bool only_initialize_values = false);
+  static make_type make(eventloop::loop&, const config&, bool only_initialize_values = false);
 
   explicit bar(connection&, signal_emitter&, const config&, const logger&, eventloop::loop&, unique_ptr<screen>&&,
       unique_ptr<tags::dispatch>&&, unique_ptr<tags::action_context>&&, bool only_initialize_values);
@@ -92,7 +94,7 @@ class bar : public xpp::event::sink<evt::button_press, evt::expose, evt::propert
   const logger& m_log;
   eventloop::loop& m_loop;
   unique_ptr<screen> m_screen;
-  unique_ptr<tray_manager> m_tray;
+  unique_ptr<legacy_tray::tray_manager> m_tray;
   unique_ptr<renderer> m_renderer;
   unique_ptr<tags::dispatch> m_dispatch;
   unique_ptr<tags::action_context> m_action_ctxt;

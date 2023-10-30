@@ -2,6 +2,7 @@
 
 #include "modules/meta/event_handler.hpp"
 #include "modules/meta/static_module.hpp"
+#include "modules/meta/types.hpp"
 #include "x11/ewmh.hpp"
 #include "x11/icccm.hpp"
 #include "x11/window.hpp"
@@ -33,12 +34,12 @@ namespace modules {
   class xwindow_module : public static_module<xwindow_module>, public event_handler<evt::property_notify> {
    public:
     enum class state { NONE, ACTIVE, EMPTY };
-    explicit xwindow_module(const bar_settings&, string);
+    explicit xwindow_module(const bar_settings&, string, const config&);
 
     void update();
     bool build(builder* builder, const string& tag) const;
 
-    static constexpr auto TYPE = "internal/xwindow";
+    static constexpr auto TYPE = XWINDOW_TYPE;
 
    protected:
     void handle(const evt::property_notify& evt) override;

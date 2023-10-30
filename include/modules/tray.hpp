@@ -3,27 +3,27 @@
 #include "common.hpp"
 #include "components/bar.hpp"
 #include "modules/meta/static_module.hpp"
+#include "modules/meta/types.hpp"
+#include "x11/tray_manager.hpp"
 
 POLYBAR_NS
 namespace modules {
-  class tray_module : public static_module<tray_module>,
-                      public signal_receiver<SIGN_PRIORITY_TRAY, signals::ui_tray::tray_width_change> {
-   public:
-    explicit tray_module(const bar_settings& bar_settings, string name_);
-    string get_format() const;
+class tray_module : public static_module<tray_module> {
+ public:
+  explicit tray_module(const bar_settings& bar_settings, string name_, const config&);
+  string get_format() const;
 
-    bool build(builder* builder, const string& tag) const;
-    void update() {}
-    void teardown();
+  void start() override;
 
-    bool on(const signals::ui_tray::tray_width_change& evt) override;
+  bool build(builder* builder, const string& tag) const;
+  void update() {}
 
-    static constexpr auto TYPE = "internal/tray";
+  static constexpr auto TYPE = TRAY_TYPE;
 
-   private:
-    static constexpr const char* TAG_TRAY{"<tray>"};
+ private:
+  static constexpr const char* TAG_TRAY{"<tray>"};
 
-    int m_width{0};
-  };
-}  // namespace modules
+  tray::manager m_tray;
+};
+} // namespace modules
 POLYBAR_NS_END
